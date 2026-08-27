@@ -18,6 +18,17 @@ It uses:
 
 The default stock universe is `AAPL, MSFT, NVDA, AMZN, GOOGL`.
 
+## Quick Commands
+
+```bash
+make setup          # create .venv and install Python dependencies
+make test           # run unit tests, integration test is skipped by default
+make postgres-up    # start PostgreSQL on localhost:5433
+make demo           # load bundled sample data into PostgreSQL, no API key needed
+make run            # run the live Alpha Vantage ETL with your .env API key
+make airflow-up     # start Airflow and PostgreSQL
+```
+
 ## What The Pipeline Does
 
 1. Extracts daily stock prices from Alpha Vantage.
@@ -31,6 +42,32 @@ The default stock universe is `AAPL, MSFT, NVDA, AMZN, GOOGL`.
 9. Logs extraction, validation, loading, retries, and failures to `logs/market_etl.log`.
 
 The weekday Airflow schedule matches normal trading-day cadence. On exchange holidays, the job may still run, but the upsert keeps historical data stable and prevents duplicate market observations.
+
+## Architecture
+
+```text
+Alpha Vantage API or local demo fixture
+        |
+        v
+Extract raw JSON with retries
+        |
+        v
+Retain raw response under data/raw/
+        |
+        v
+pandas transform to daily price rows
+        |
+        v
+Pandera data-quality validation
+        |
+        v
+PostgreSQL upsert through SQLAlchemy
+        |
+        v
+Airflow scheduled weekday run at 5 PM America/Los_Angeles
+```
+
+The Airflow DAG is intentionally thin. It calls the same Python pipeline that can be run manually, which keeps the business logic testable outside Airflow.
 
 ## Technical Interview Guide
 
@@ -53,9 +90,12 @@ financial-market-etl/
   logs/
   src/market_etl/
   tests/
+  tests/fixtures/alpha_vantage_daily_aapl.json
+  .github/workflows/tests.yml
   .env.example
   .gitignore
   Dockerfile
+  Makefile
   docker-compose.yml
   pytest.ini
   requirements.txt
@@ -123,21 +163,19 @@ It is scheduled for:
 Start PostgreSQL first:
 
 ```bash
-docker compose up -d postgres
+make postgres-up
 ```
 
 Create a local Python environment:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+make setup
 ```
 
 Run the free Alpha Vantage daily update:
 
 ```bash
-PYTHONPATH=src python -m market_etl.pipeline --output-size compact
+make run
 ```
 
 Run full historical output only if your Alpha Vantage plan supports it:
@@ -151,6 +189,17 @@ Run specific tickers:
 ```bash
 PYTHONPATH=src python -m market_etl.pipeline --tickers AAPL,NVDA --output-size compact
 ```
+
+## Demo Mode
+
+The project includes a no-API-key demo using `tests/fixtures/alpha_vantage_daily_aapl.json`.
+
+```bash
+make setup
+make demo
+```
+
+Demo mode still uses the real transformation, Pandera validation, raw-response retention, and PostgreSQL upsert path. The only difference is that extraction reads a checked-in fixture instead of calling Alpha Vantage.
 
 ## Database Tables
 
@@ -195,24 +244,24 @@ Alpha Vantage rate-limit messages are treated as failures and retried according 
 Run unit tests:
 
 ```bash
-source .venv/bin/activate
-pytest tests/unit
+make test-unit
 ```
 
 Run integration tests against PostgreSQL:
 
 ```bash
-docker compose up -d postgres
-RUN_INTEGRATION_TESTS=true DATABASE_URL=postgresql+psycopg2://etl:etl@localhost:5433/market_data pytest tests/integration
+make test-integration
 ```
 
 Run everything:
 
 ```bash
-pytest
+make test
 ```
 
 Integration tests are skipped unless `RUN_INTEGRATION_TESTS=true`.
+
+GitHub Actions runs the unit test suite on pushes and pull requests.
 
 ## Configuration
 
@@ -260,3 +309,13 @@ HAVING COUNT(*) > 1;
 ```
 
 That query should return zero rows.
+
+## Interview Talking Points
+
+- The pipeline is idempotent: rerunning the same ticker and date updates the existing row instead of inserting duplicates.
+- Raw API responses are retained so the pipeline can be debugged or replayed without calling the provider again.
+- Pandera catches bad batches before load, while PostgreSQL constraints protect the durable table.
+- Airflow handles scheduling and operational visibility; the ETL logic stays in normal Python modules for testability.
+- Docker Compose makes the local Airflow plus PostgreSQL stack reproducible on macOS.
+- Demo mode proves the transform, validation, and load path without exposing or depending on an API key.
+- Production improvements would include managed secrets, object storage for raw files, an exchange trading calendar, alerting, and stricter provider rate-limit handling.
