@@ -1,0 +1,97 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: market-etl-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  airflow-init:
+    build: .
+    container_name: market-etl-airflow-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment: &airflow-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
+      PYTHONPATH: /opt/airflow/project/src
+      DATABASE_URL: postgresql+psycopg2://etl:etl@postgres:5432/market_data
+      RAW_DATA_DIR: /opt/airflow/project/data/raw
+      LOG_DIR: /opt/airflow/project/logs
+      TICKERS: ${TICKERS:-AAPL,MSFT,NVDA,AMZN,GOOGL}
+      ALPHA_VANTAGE_OUTPUT_SIZE: ${ALPHA_VANTAGE_OUTPUT_SIZE:-compact}
+      API_MAX_RETRIES: ${API_MAX_RETRIES:-4}
+      API_BACKOFF_SECONDS: ${API_BACKOFF_SECONDS:-2}
+      API_TIMEOUT_SECONDS: ${API_TIMEOUT_SECONDS:-30}
+    volumes: &airflow-volumes
+      - ./airflow/dags:/opt/airflow/dags
+      - ./src:/opt/airflow/project/src
+      - ./data:/opt/airflow/project/data
+      - ./logs:/opt/airflow/project/logs
+      - ./config:/opt/airflow/project/config
+    user: "${AIRFLOW_UID:-50000}:0"
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com || true
+
+  airflow-webserver:
+    build: .
+    container_name: market-etl-airflow-webserver
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      <<: *airflow-env
+    volumes: *airflow-volumes
+    user: "${AIRFLOW_UID:-50000}:0"
+    ports:
+      - "8080:8080"
+    command: webserver
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  airflow-scheduler:
+    build: .
+    container_name: market-etl-airflow-scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      <<: *airflow-env
+    volumes: *airflow-volumes
+    user: "${AIRFLOW_UID:-50000}:0"
+    command: scheduler
+
+volumes:
+  postgres_data:
