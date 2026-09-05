@@ -30,7 +30,7 @@ run: postgres-up
 	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m market_etl.pipeline --output-size compact
 
 demo: postgres-up
-	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m market_etl.demo
+	DATABASE_URL=postgresql+psycopg2://etl:etl@localhost:5433/market_data PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m market_etl.demo
 
 airflow-init:
 	export AIRFLOW_UID=$$(id -u); docker compose up --build airflow-init
