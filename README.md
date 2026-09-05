@@ -1,11 +1,23 @@
 # Financial Market ETL Pipeline
 
-This is a macOS-friendly ETL project for daily U.S. stock-market data.
+A production-style ETL pipeline for daily U.S. stock-market data. The project extracts price data from Alpha Vantage, stores raw API responses for auditability, validates transformed records with Pandera, and loads clean market observations into PostgreSQL through idempotent upserts.
 
-It uses:
+The default stock universe is `AAPL, MSFT, NVDA, AMZN, GOOGL`.
+
+## Highlights
+
+- End-to-end Python ETL flow with extraction, transformation, validation, loading, logging, and retry behavior
+- Raw-response retention under `data/raw/<TICKER>/` so API output can be audited or replayed
+- Pandera data-quality checks before records are written to the database
+- PostgreSQL schema with duplicate protection on `ticker + trading_date`
+- Airflow DAG for weekday scheduling at 5:00 PM `America/Los_Angeles`
+- Docker Compose setup for local PostgreSQL and Airflow
+- Unit tests, fixture-based demo mode, and optional PostgreSQL integration tests
+
+## Tech Stack
 
 - Python 3.11+
-- Alpha Vantage market-data API
+- Alpha Vantage API
 - requests
 - pandas
 - Pandera
@@ -15,8 +27,6 @@ It uses:
 - Docker Compose
 - pytest
 - python-dotenv
-
-The default stock universe is `AAPL, MSFT, NVDA, AMZN, GOOGL`.
 
 ## Quick Commands
 
@@ -69,16 +79,6 @@ Airflow scheduled weekday run at 5 PM America/Los_Angeles
 
 The Airflow DAG is intentionally thin. It calls the same Python pipeline that can be run manually, which keeps the business logic testable outside Airflow.
 
-## Technical Interview Guide
-
-A detailed PDF explanation is included at:
-
-```text
-docs/technical-interview-guide.pdf
-```
-
-It explains the architecture, stack choices, data model, idempotency, failure handling, testing strategy, production tradeoffs, and how to rebuild the project yourself.
-
 ## Project Layout
 
 ```text
@@ -86,7 +86,7 @@ financial-market-etl/
   airflow/dags/financial_market_etl_dag.py
   data/raw/
   db/init/00-create-databases.sql
-  docs/technical-interview-guide.pdf
+  docs/
   logs/
   src/market_etl/
   tests/
@@ -101,7 +101,7 @@ financial-market-etl/
   requirements.txt
 ```
 
-## macOS Setup
+## Setup
 
 Install these first:
 
@@ -133,11 +133,7 @@ docker compose up --build airflow-init
 docker compose up --build
 ```
 
-Open Airflow:
-
-```text
-http://localhost:8080
-```
+Open Airflow at `http://localhost:8080`.
 
 Default local Airflow login:
 
@@ -146,17 +142,7 @@ username: admin
 password: admin
 ```
 
-Enable the DAG named:
-
-```text
-financial_market_daily_etl
-```
-
-It is scheduled for:
-
-```text
-5:00 PM America/Los_Angeles, Monday through Friday
-```
+Enable the DAG named `financial_market_daily_etl`.
 
 ## Run The Pipeline Manually
 
@@ -228,7 +214,7 @@ The Pandera validation layer checks:
 - no duplicate `ticker + trading_date` rows inside a batch
 - source is `alpha_vantage`
 
-## API Failure Behavior
+## Failure Behavior
 
 Each ticker is retried with exponential backoff. If the API still fails:
 
@@ -259,9 +245,7 @@ Run everything:
 make test
 ```
 
-Integration tests are skipped unless `RUN_INTEGRATION_TESTS=true`.
-
-GitHub Actions runs the unit test suite on pushes and pull requests.
+Integration tests are skipped unless `RUN_INTEGRATION_TESTS=true`. GitHub Actions runs the unit test suite on pushes and pull requests.
 
 ## Configuration
 
@@ -310,12 +294,11 @@ HAVING COUNT(*) > 1;
 
 That query should return zero rows.
 
-## Interview Talking Points
+## Design Notes
 
-- The pipeline is idempotent: rerunning the same ticker and date updates the existing row instead of inserting duplicates.
-- Raw API responses are retained so the pipeline can be debugged or replayed without calling the provider again.
-- Pandera catches bad batches before load, while PostgreSQL constraints protect the durable table.
-- Airflow handles scheduling and operational visibility; the ETL logic stays in normal Python modules for testability.
+- Idempotent loads let the same ticker and trading date be reprocessed without duplicate rows.
+- Raw API responses are retained so failed or suspicious transformations can be inspected later.
+- Pandera catches malformed batches before load, while PostgreSQL constraints protect durable storage.
+- Airflow handles scheduling and operational visibility; the ETL logic remains in normal Python modules for local testing.
 - Docker Compose makes the local Airflow plus PostgreSQL stack reproducible on macOS.
 - Demo mode proves the transform, validation, and load path without exposing or depending on an API key.
-- Production improvements would include managed secrets, object storage for raw files, an exchange trading calendar, alerting, and stricter provider rate-limit handling.
